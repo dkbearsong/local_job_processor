@@ -1,0 +1,126 @@
+# ... existing code ...
+from pydantic import BaseModel, Field
+
+# Added for testing mode
+class MockResponse:
+    def __init__(self, text: str):
+        self.text = text
+
+# Modules
+# ... existing code ...
+def main():
+    # Initialize Error Logging
+    setup_logging("project_errors.log")
+
+    # Set the global exception hook to catch unhandled crashes
+    sys.excepthook = exception_handler
+
+    # pull from env
+    gem_key = os.getenv("GEMINI_KEY")
+    lm_api = os.getenv("LM_STUDIO_API")
+    resume = os.getenv("RESUME")
+    profile = os.getenv("PROFILE")
+    app_mode = os.getenv("APP_MODE", "production") # Added to detect test mode
+
+    # Check for required environment variables
+    if app_mode != "test":
+        if not gem_key:
+            raise ValueError("GEMINI_KEY environment variable is not set.")
+        if not lm_api:
+            raise ValueError("LM_STUDIO_API environment variable is not set.")
+
+    # Build connectors
+    gem_conn = connect_gemini(gem_key)
+    lc_connection = LangchainConnector('google/gemma-4-26b-a4b', 'lmstudio', lm_api)
+
+    if app_mode != "test" and gem_conn is None:
+        raise ConnectionError("Unable to connect to Gemini API with provided key.")
+    
+    # set up logging (You can now use logging.info() anywhere in your project)
+    import logging
+    logging.info(f"Project started in {app_mode} mode.")
+
+    if app_mode == "test":
+        # --- TEST MODE SETUP: JUMPING DIRECTLY TO STEP 1 ---
+        print("Running in TEST MODE. Using dummy data and bypassing Gemini/SQL calls.")
+        
+        # 1. & 2. Set response for common_skills and projects
+        common_skills_response = MockResponse(text="Dummy Skills: Python, SQL, Project Management")
+        projects_response = MockResponse(text="Dummy Projects: Build a web scraper, Create a database schema")
+        
+        # Initialize minimal jobs_list so Step 1 loop works
+        jobs_list = [{
+            'id': '999', 
+            'job_name': 'Test Engineer', 
+            'job_summary': 'Looking for someone with Python and SQL experience.'
+        }]
+        
+        # Prepare text variables used later in report generation
+        common_skills_text = common_skills_response.text
+        projects_text = projects_response.text
+        job_title = "Test Job"
+    else:
+        # --- PRODUCTION MODE: RUNNING ACTUAL LOGIC ---
+        # Get job title to search for and compare
+        job_title = input("Please provide the job title you would like to analyze job descriptions for: ")
+        sql_query = f'''
+        SELECT j.id, j.job_name, c.company_name, j.job_summary
+        FROM job j
+        JOIN company c
+        ON j.company_id = c.id
+        WHERE j.job_name LIKE '%{job_title}%' AND j.job_summary IS NOT NULL
+        LIMIT 30;
+        '''
+
+        # Execute SQL query using the SSH connector module
+        try:
+            results = execute_query_with_env_vars(sql_query)
+            jobs_list = [row for row in results]
+            job_descriptions = [row['job_summary'] for row in jobs_list if 'job_summary' in row]
+        except Exception as e:
+            raise e
+        
+        print(f"Processing {len(jobs_list)} jobs...")
+
+        # Run call to Gemini to process job descriptions and identify top 10 most common skills
+        gem_skills_query = f'''
+        The following is a list of job descriptions from similar jobs. Please return the following in Markdown format:
+        - Top 10 responsibilities in the job description, from most frequent to least frequent
+        - Top 10 skills in the job description, from most frequent to least frequent
+        - Top 10 requirements in the job description, from most frequent to least frequent
+        - Any certifications that commonly appear
+
+        Ignore any industry specific experience, requirements, etc.
+
+        job_descriptions: {'\n'.join(job_descriptions)}
+        ''' 
+
+        common_skills_response = gem_conn.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=gem_skills_query
+        )
+
+        # Run call to Gemini to get suggestions on what projects to build to demonstrate the skills
+        gem_projects_query = f'''
+        The following is a list of top responsibilities for a specific job type, top skills for this job type, top requirements for this job type, and any certifications that are common for this job type. Return a list of projects you would suggest for someone trying to get into this role
+        
+        # Response of responsibilities, skills, requirements, and certifications
+        {common_skills_response.text}
+        '''
+
+        projects_response = gem_conn.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=gem_projects_query
+        )
+
+        common_skills_text = common_skills_response.text or ""
+        projects_text = projects_response.text or ""
+
+        # Write Gemini responses to report
+        generate_job_report(job_title, common_skills_text, projects_text)
+
+
+    # --- START OF LM-STUDIO LOGIC (Line 136 equivalent) ---
+
+    # Step 0: define output structure
+# ... rest of code ...

@@ -1,0 +1,9 @@
+# Folders
+.venv/
+documents/
+output/
+__pycache__/
+
+# Files
+.env
+project_errors.log
