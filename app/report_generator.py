@@ -38,7 +38,7 @@ def _convert_markdown_to_docx(doc, markdown_text: str):
     
     print("Successfully added to docx.")
 
-def generate_job_report(job_title: str, skills_text: str, projects_text: str, matches: str, adjustments: str):
+def generate_job_report(job_title: str, company_name: str, skills_text: str, projects_text: str, matches: str, adjustments: str):
     """
     Generates a .docx report containing job analysis and suggested projects.
     Saves it to an 'output' folder with a timestamped filename.
@@ -59,7 +59,7 @@ def generate_job_report(job_title: str, skills_text: str, projects_text: str, ma
     doc = Document()
     
     # Add a main title
-    doc.add_heading(f'Job Analysis Report: {job_title}', 0)
+    doc.add_heading(f'Job Analysis Report for {f"Job Title:  '{job_title}'" if job_title != '' else f"Company Name: '{company_name}'" if company_name != '' else ""}', 0)
 
     # Section: Skills and Requirements
     doc.add_heading('Skills, Responsibilities, and Requirements', level=1)

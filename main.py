@@ -43,7 +43,7 @@ def connect_lms(lm_api:str):
         print(f"LM Studio connection error: {e}")
         return None
     
-def create_sql_query(job_title: str, limit: int = 3, minusDays:int = 7):
+def create_sql_query(job_title: str, company_name: str, type:str, limit: int = 3, minusDays:int = 7, ):
     sql_query = f'''
     SELECT j.id, j.job_name, c.company_name, j.job_summary
     FROM job j
@@ -51,8 +51,8 @@ def create_sql_query(job_title: str, limit: int = 3, minusDays:int = 7):
     ON j.company_id = c.id
     JOIN office o
     on j.office_id = o.id
-    WHERE j.job_name LIKE '%{job_title}%'
-    AND (j.skip IS NULL OR j.skip = False) 
+    WHERE (j.skip IS NULL OR j.skip = False) 
+    {f"AND j.job_name LIKE '%{job_title}%'" if type == 'job' else f"AND c.company_name LIKE '%{company_name}%'" if type == 'company' else f""}
     AND j.job_summary IS NOT NULL
     AND j.date_added >= CURRENT_DATE - INTERVAL '{minusDays} days'  
     AND (o.country IN ('USA', 'United States', 'US') OR o.location LIKE '%Remote%' AND o.country = 'NA') 
@@ -138,6 +138,10 @@ async def main():
     else:
         gem_conn = None
 
+    assert lm_api is not None, "LM_STUDIO_API environment variable is not set."
+    assert lm_port is not None, "LM_STUDIO_PORT environment variable is not set."
+    assert lm_model is not None, "LM_STUDIO_MODEL environment variable is not set."
+
     lm_conn = create_lm_connection(lm_api, int(lm_port), lm_model)
     # Initialize LangchainConnector to use LM Studio
     base_url = lm_conn.base_url
@@ -151,13 +155,17 @@ async def main():
     import logging
     logging.info(f"Project started in {app_mode} mode.")
 
+    job_title = ""
+    company_name = ""
+
     if app_mode == "test":
         # --- TEST MODE SETUP: JUMPING DIRECTLY TO STEP 1 ---
         print("Running in TEST MODE. Using dummy data and bypassing Gemini/SQL calls.")
 
         # 0. SQL Search
         job_title = 'Support Engineer'
-        sql_query = create_sql_query(job_title, 10)
+        search_type = "job"
+        sql_query = create_sql_query(job_title, company_name, search_type, 10)
         job_limit = 3
         
          # Execute SQL query using the SSH connector module
@@ -186,12 +194,22 @@ async def main():
     else:
         # --- PRODUCTION MODE: RUNNING ACTUAL LOGIC ---
 
-        # Get job title to search for and compare
-        job_title = input("Please provide the job title you would like to analyze job descriptions for: ")
+        # Get job title or company name to search for and compare
+        search_type = input("Please identify if you want to run a search by job or by company: ")
+        while search_type not in ("job","company"):
+            search_type = input("Invalid type. Please specify whether to search by job or by company: ")
+        # Initialize variables - only one will be used based on search type
+        if search_type == "job":
+            job_title = input("Please provide the job title you would like to analyze job descriptions for: ")
+        elif search_type == "company":
+            company_name = input("Please provide the company name you would like to search for: ")
+        
         interval = int(input("Please provide the number of days you would like to go back: "))
         lim = int(input("Please provide the amount of jobs with the title you would like to limit to: "))
         job_limit = int(input("Please provide the count of top jobs to show: "))
-        sql_query = create_sql_query(job_title, interval, lim)
+
+        sql_query = create_sql_query(job_title, company_name, search_type, interval, lim)
+
 
         # Execute SQL query using the SSH connector module
         try:
@@ -201,44 +219,44 @@ async def main():
         
         print(f"Processing {len(jobs_list)} jobs...")
 
-        # Run call to Gemini to process job descriptions and identify top 10 most common skills
-        gem_skills_query = f'''
-        The following is a list of job descriptions from similar jobs. Please return the following in Markdown format:
-        - Top 10 responsibilities in the job description, from most frequent to least frequent
-        - Top 10 skills in the job description, from most frequent to least frequent
-        - Top 10 requirements in the job description, from most frequent to least frequent
-        - Any certifications that commonly appear
+        if search_type == "job":
+            # Run call to Gemini to process job descriptions and identify top 10 most common skills
+            gem_skills_query = f'''
+            The following is a list of job descriptions from similar jobs. Please return the following in Markdown format:
+            - Top 10 responsibilities in the job description, from most frequent to least frequent
+            - Top 10 skills in the job description, from most frequent to least frequent
+            - Top 10 requirements in the job description, from most frequent to least frequent
+            - Any certifications that commonly appear
 
-        Ignore any industry specific experience, certifications, etc.
+            Ignore any industry specific experience, certifications, etc.
 
-        job_descriptions: {'\n'.join(job_descriptions)}
-        ''' 
+            job_descriptions: {'\n'.join(job_descriptions)}
+            ''' 
 
-        assert gem_conn is not None, "Gemini connection required in production mode."
-        common_skills_response = gem_conn.models.generate_content(
-            model="gemini-3-flash-preview",
-            contents=gem_skills_query
-        )
+            assert gem_conn is not None, "Gemini connection required in production mode."
+            common_skills_response = gem_conn.models.generate_content(
+                model="gemini-3-flash-preview",
+                contents=gem_skills_query
+            )
 
-        ### print(common_skills_response)
+            ### print(common_skills_response)
 
-        # Run call to Gemini to get suggestions on what projects to build to demonstrate the skills
-        gem_projects_query = f'''
-        The following is a list of top responsibilities for a specific job type, top skills for this job type, top requirements for this job type, and any certifications that are common for this job type. Return a list of projects you would suggest for someone trying to get into this role
-        
-        # Response of responsibilities, skills, requirements, and certifications
-        {common_skills_response.text}
-        '''
+            # Run call to Gemini to get suggestions on what projects to build to demonstrate the skills
+            gem_projects_query = f'''
+            The following is a list of top responsibilities for a specific job type, top skills for this job type, top requirements for this job type, and any certifications that are common for this job type. Return a list of projects you would suggest for someone trying to get into this role
+            
+            # Response of responsibilities, skills, requirements, and certifications
+            {common_skills_response.text}
+            '''
 
-        projects_response = gem_conn.models.generate_content(
-            model="gemini-3-flash-preview",
-            contents=gem_projects_query
-        )
+            projects_response = gem_conn.models.generate_content(
+                model="gemini-3-flash-preview",
+                contents=gem_projects_query
+            )
 
-        # Write Gemini responses to report
-        common_skills_text = common_skills_response.text or ""
-        projects_text = projects_response.text or ""
-
+            # Write Gemini responses to report
+            common_skills_text = common_skills_response.text or ""
+            projects_text = projects_response.text or ""
 
     # Run local call to LM-Studio to compare resume and user profile to list of jobs and 
     # identify the top 3 jobs that would suggest targeting
@@ -471,7 +489,7 @@ Return JSON only.
 
     # Append the findings to your existing report generation logic
     # (Assuming generate_job_report can be called again or handles appending)
-    generate_job_report(job_title, common_skills_text, projects_text, pcm, adjustments)
+    generate_job_report(job_title, company_name, common_skills_text, projects_text, pcm, adjustments)
 
 if __name__ == "__main__":
     asyncio.run(main())
