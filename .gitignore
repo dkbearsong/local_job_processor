@@ -7,3 +7,4 @@ __pycache__/
 # Files
 .env
 project_errors.log
+example.csv

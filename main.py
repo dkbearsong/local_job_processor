@@ -1,4 +1,5 @@
 # Libraries
+import csv
 import os
 import sys
 from typing import List
@@ -50,7 +51,7 @@ def create_sql_query(job_title: str, company_name: str, type:str, limit: int = 3
     JOIN company c
     ON j.company_id = c.id
     JOIN office o
-    on j.office_id = o.id
+    ON j.office_id = o.id
     WHERE (j.skip IS NULL OR j.skip = False) 
     {f"AND j.job_name LIKE '%{job_title}%'" if type == 'job' else f"AND c.company_name LIKE '%{company_name}%'" if type == 'company' else f""}
     AND j.job_summary IS NOT NULL
@@ -67,6 +68,39 @@ def pull_sql_data(query:str):
     jl = [row for row in results]
     jd = [row['job_summary'] for row in jl if 'job_summary' in row]
     return jl, jd
+
+
+def load_jobs_from_csv(csv_path: str):
+    required_fields = {'id', 'job_name', 'company_name', 'job_summary'}
+    with open(csv_path, newline='', encoding='utf-8') as csv_file:
+        reader = csv.DictReader(csv_file)
+        if reader.fieldnames is None:
+            raise ValueError("CSV file has no header row.")
+
+        headers = {field.strip().lower() for field in reader.fieldnames if field}
+        missing_fields = required_fields - headers
+        if missing_fields:
+            raise ValueError(f"CSV file is missing required fields: {', '.join(sorted(missing_fields))}")
+
+        jobs = []
+        descriptions = []
+        for row in reader:
+            normalized = {key.strip().lower(): (value or '').strip() for key, value in row.items() if key}
+            if not normalized.get('job_summary'):
+                continue
+            jobs.append({
+                'id': normalized.get('id', ''),
+                'job_name': normalized.get('job_name', ''),
+                'company_name': normalized.get('company_name', ''),
+                'job_summary': normalized.get('job_summary', ''),
+            })
+            descriptions.append(normalized.get('job_summary', ''))
+
+        if not jobs:
+            raise ValueError("CSV file contains no valid jobs with a job_summary.")
+
+    return jobs, descriptions
+
 
 def file_to_string(file_name):
     if file_name.endswith(".pdf"):
@@ -194,33 +228,42 @@ async def main():
     else:
         # --- PRODUCTION MODE: RUNNING ACTUAL LOGIC ---
 
-        # Get job title or company name to search for and compare
-        search_type = input("Please identify if you want to run a search by job or by company: ")
-        while search_type not in ("job","company"):
-            search_type = input("Invalid type. Please specify whether to search by job or by company: ")
-        # Initialize variables - only one will be used based on search type
-        if search_type == "job":
-            job_title = input("Please provide the job title you would like to analyze job descriptions for: ")
-        elif search_type == "company":
-            company_name = input("Please provide the company name you would like to search for: ")
-        
-        interval = int(input("Please provide the number of days you would like to go back: "))
-        lim = int(input("Please provide the amount of jobs with the title you would like to limit to: "))
-        job_limit = int(input("Please provide the count of top jobs to show: "))
+        use_csv = input("Would you like to load job data from a CSV file instead of SQL? (y/n): ").strip().lower()
+        if use_csv in ("y", "yes"):
+            csv_path = input("Please provide the path to the CSV file: ").strip()
+            try:
+                jobs_list, job_descriptions = load_jobs_from_csv(csv_path)
+            except Exception as e:
+                raise ValueError(f"Error loading CSV file: {e}")
+            print(f"Loaded {len(jobs_list)} jobs from CSV file.")
+            search_type = "csv"
+            job_limit = int(input("Please provide the count of top jobs to show: "))
+        else:
+            # Get job title or company name to search for and compare
+            search_type = input("Please identify if you want to run a search by job or by company: ")
+            while search_type not in ("job","company"):
+                search_type = input("Invalid type. Please specify whether to search by job or by company: ")
+            # Initialize variables - only one will be used based on search type
+            if search_type == "job":
+                job_title = input("Please provide the job title you would like to analyze job descriptions for: ")
+            elif search_type == "company":
+                company_name = input("Please provide the company name you would like to search for: ")
 
-        sql_query = create_sql_query(job_title, company_name, search_type, interval, lim)
+            interval = int(input("Please provide the number of days you would like to go back: "))
+            lim = int(input("Please provide the amount of jobs with the title you would like to limit to: "))
+            job_limit = int(input("Please provide the count of top jobs to show: "))
 
+            sql_query = create_sql_query(job_title, company_name, search_type, interval, lim)
 
-        # Execute SQL query using the SSH connector module
-        try:
-            jobs_list, job_descriptions = pull_sql_data(sql_query)
-        except Exception as e:
-            raise e
-        
-        print(f"Processing {len(jobs_list)} jobs...")
+            # Execute SQL query using the SSH connector module
+            try:
+                jobs_list, job_descriptions = pull_sql_data(sql_query)
+            except Exception as e:
+                raise e
+            
+            print(f"Processing {len(jobs_list)} jobs...")
 
-        if search_type == "job":
-            # Run call to Gemini to process job descriptions and identify top 10 most common skills
+        if search_type in ("job"):
             gem_skills_query = f'''
             The following is a list of job descriptions from similar jobs. Please return the following in Markdown format:
             - Top 10 responsibilities in the job description, from most frequent to least frequent
@@ -257,6 +300,9 @@ async def main():
             # Write Gemini responses to report
             common_skills_text = common_skills_response.text or ""
             projects_text = projects_response.text or ""
+        else:
+            common_skills_text = ""
+            projects_text = ""
 
     # Run local call to LM-Studio to compare resume and user profile to list of jobs and 
     # identify the top 3 jobs that would suggest targeting
