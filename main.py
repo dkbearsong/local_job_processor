@@ -2,7 +2,7 @@
 import csv
 import os
 import sys
-from typing import List
+from typing import List, Optional
 import pypdf
 from docx import Document
 import google.genai as genai
@@ -10,6 +10,11 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 import asyncio
 from langchain_core.prompts import PromptTemplate
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+import tempfile
+import logging
 
 # Modules
 from app.logger import setup_logging, exception_handler
@@ -18,15 +23,22 @@ from app.report_generator import generate_job_report
 from app.lm_connector import create_lm_connection
 from app.langchain_caller import LangchainConnector
 
-# Added for testing mode
-class MockResponse:
-    def __init__(self, text: str):
-        self.text = text
+app = FastAPI(title="Local Job Processor API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+setup_logging("project_errors.log")
+sys.excepthook = exception_handler
 
 ############################## Helper Functions ####################################
 
 def connect_gemini(gem_key: str | None):
-    """Builds a connection to Google Gemini's API to make requests and returns the client."""
     try:
         client = genai.Client(api_key=gem_key)
         return client
@@ -35,16 +47,14 @@ def connect_gemini(gem_key: str | None):
         return None
 
 def connect_lms(lm_api:str):
-    """Builds a connection to a local install of LM Studio, taking in the API path as a variable and returns the client."""
     try:
-        # LM Studio uses an OpenAI-compatible endpoint
         client = OpenAI(base_url=lm_api, api_key="lm-studio")
         return client
     except Exception as e:
         print(f"LM Studio connection error: {e}")
         return None
     
-def create_sql_query(job_title: str, company_name: str, type:str, limit: int = 3, minusDays:int = 7, ):
+def create_sql_query(job_title: str, company_name: str, type:str, limit: int = 3, minusDays:int = 7):
     sql_query = f'''
     SELECT j.id, j.job_name, c.company_name, j.job_summary
     FROM job j
@@ -61,14 +71,11 @@ def create_sql_query(job_title: str, company_name: str, type:str, limit: int = 3
     '''
     return sql_query
 
-    
 def pull_sql_data(query:str):
     results = execute_query_with_env_vars(query)
-    # We keep the full row dict so we can reference job_id and job_name later
     jl = [row for row in results]
     jd = [row['job_summary'] for row in jl if 'job_summary' in row]
     return jl, jd
-
 
 def load_jobs_from_csv(csv_path: str):
     required_fields = {'id', 'job_name', 'company_name', 'job_summary'}
@@ -101,7 +108,6 @@ def load_jobs_from_csv(csv_path: str):
 
     return jobs, descriptions
 
-
 def file_to_string(file_name):
     if file_name.endswith(".pdf"):
         with open(file_name, 'rb') as open_file:
@@ -122,9 +128,6 @@ def file_to_string(file_name):
     else:
         raise ValueError(f"Unsupported file format: {file_name}. Please provide a .pdf or .docx file.")
 
-
-########################## AI Functions #########################################
-
 async def invoke_with_retry(chain, inputs, validator, max_retries=3):
     for attempt in range(max_retries):
         try:
@@ -137,179 +140,146 @@ async def invoke_with_retry(chain, inputs, validator, max_retries=3):
             print(f"  Error on attempt {attempt + 1}: {e}")
     raise Exception(f"Failed after {max_retries} attempts")
 
-######################## Main Function #################################
 
-async def main():
-    # Initialize Error Logging
-    setup_logging("project_errors.log")
+############################## API Endpoints ####################################
 
-    # Set the global exception hook to catch unhandled crashes
-    sys.excepthook = exception_handler
+class JobFit(BaseModel):
+    job_id: str
+    job_name: str
+    company_name: str
+    matching_skills: List[str]
+    missing_skills: List[str]
+    match_score: int = Field(description="Score from 0-100")
+    reasoning: str = Field(description="Brief explanation of why this is a top match")
 
-    # pull from env
+class ExtractCandateInfo(BaseModel):
+    skills: list
+    tools: list
+    industries: list
+    years_experience: str
+    seniority: str
+    roles: list
+    summary: str
+
+class JobRequirements(BaseModel):
+    job_id: int
+    job_name: str
+    company_name: str
+    requirements: List[str]
+
+@app.post("/api/analyze")
+async def analyze_jobs(
+    search_type: str = Form(...),
+    lm_studio_api: str = Form(None),
+    job_title: str = Form(""),
+    company_name: str = Form(""),
+    interval: int = Form(7),
+    lim: int = Form(10),
+    job_limit: int = Form(3),
+    csv_file: UploadFile = File(None)
+):
     gem_key = os.getenv("GEMINI_KEY")
-    lm_api = os.getenv("LM_STUDIO_API")
-    lm_port = os.getenv("LM_STUDIO_PORT")
-    lm_model = os.getenv("LM_STUDIO_MODEL")
+    lm_port = os.getenv("LM_STUDIO_PORT", "1234")
+    lm_model = os.getenv("LM_STUDIO_MODEL", "local-model")
     resume_file = os.getenv("RESUME")
-    resume = file_to_string(resume_file)
     profile_file = os.getenv("PROFILE")
-    profile = file_to_string(profile_file)
-    app_mode = os.getenv("APP_MODE", "production") # Added to detect test mode
 
-    # Check for required environment variables
-    if app_mode != "test":
-        if not gem_key:
-            raise ValueError("GEMINI_KEY environment variable is not set.")
-        if not lm_api:
-            raise ValueError("LM_STUDIO_API environment variable is not set.")
+    # Override LM_STUDIO_API if provided via frontend
+    lm_api = lm_studio_api if lm_studio_api else os.getenv("LM_STUDIO_API")
 
-    # Build connectors
-    if app_mode != "test":
-        gem_conn = connect_gemini(gem_key)
-        if gem_conn is None:
-            raise ConnectionError("Unable to connect to Gemini API with provided key.")
-    else:
-        gem_conn = None
+    if not gem_key:
+        raise HTTPException(status_code=500, detail="GEMINI_KEY environment variable is not set.")
+    if not lm_api:
+        raise HTTPException(status_code=500, detail="LM_STUDIO_API is not provided via form or environment.")
 
-    assert lm_api is not None, "LM_STUDIO_API environment variable is not set."
-    assert lm_port is not None, "LM_STUDIO_PORT environment variable is not set."
-    assert lm_model is not None, "LM_STUDIO_MODEL environment variable is not set."
+    gem_conn = connect_gemini(gem_key)
+    if gem_conn is None:
+        raise HTTPException(status_code=500, detail="Unable to connect to Gemini API.")
 
     lm_conn = create_lm_connection(lm_api, int(lm_port), lm_model)
-    # Initialize LangchainConnector to use LM Studio
-    base_url = lm_conn.base_url
-    print(f"Using LLM base_url: {base_url}")
     langchain_connector = LangchainConnector(
         model_name=lm_conn.config.model_name,
         provider="lmstudio",
-        base_url=base_url
+        base_url=lm_conn.base_url
     )
 
-    import logging
-    logging.info(f"Project started in {app_mode} mode.")
-
-    job_title = ""
-    company_name = ""
-
-    if app_mode == "test":
-        # --- TEST MODE SETUP: JUMPING DIRECTLY TO STEP 1 ---
-        print("Running in TEST MODE. Using dummy data and bypassing Gemini/SQL calls.")
-
-        # 0. SQL Search
-        job_title = 'Support Engineer'
-        search_type = "job"
-        sql_query = create_sql_query(job_title, company_name, search_type, 10)
-        job_limit = 3
+    try:
+        resume = file_to_string(resume_file) if resume_file else ""
+    except Exception:
+        resume = ""
         
-         # Execute SQL query using the SSH connector module
+    try:
+        profile = file_to_string(profile_file) if profile_file else ""
+    except Exception:
+        profile = ""
+
+    jobs_list = []
+    job_descriptions = []
+
+    if search_type == "csv":
+        if not csv_file:
+            raise HTTPException(status_code=400, detail="CSV file is required for CSV search.")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+            tmp.write(await csv_file.read())
+            tmp_path = tmp.name
+        try:
+            jobs_list, job_descriptions = load_jobs_from_csv(tmp_path)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error loading CSV file: {e}")
+        finally:
+            os.remove(tmp_path)
+    elif search_type in ("job", "company"):
+        if search_type == "job" and not job_title:
+            raise HTTPException(status_code=400, detail="Job title is required for job search.")
+        if search_type == "company" and not company_name:
+            raise HTTPException(status_code=400, detail="Company name is required for company search.")
+        
+        sql_query = create_sql_query(job_title, company_name, search_type, lim, interval)
         try:
             jobs_list, job_descriptions = pull_sql_data(sql_query)
         except Exception as e:
-            raise e
-        
-        # print(f"Jobs List: {jobs_list}\n\n")
-        
-        # 1. & 2. Set response for common_skills and projects
-        common_skills_response = MockResponse(text="Dummy Skills: Python, SQL, Project Management")
-        projects_response = MockResponse(text="Dummy Projects: Build a web scraper, Create a database schema")
-        
-        # Initialize minimal jobs_list so Step 1 loop works
-        #jobs_list = [{
-        #    'id': '999', 
-        #    'job_name': 'Test Engineer', 
-        #    'job_summary': 'Looking for someone with Python and SQL experience.'
-        #}]
-        
-        # Prepare text variables used later in report generation
-        common_skills_text = common_skills_response.text
-        projects_text = projects_response.text
-        # job_title = "Test Job"
+            raise HTTPException(status_code=500, detail=f"Database error: {e}")
     else:
-        # --- PRODUCTION MODE: RUNNING ACTUAL LOGIC ---
+        raise HTTPException(status_code=400, detail="Invalid search type.")
 
-        use_csv = input("Would you like to load job data from a CSV file instead of SQL? (y/n): ").strip().lower()
-        if use_csv in ("y", "yes"):
-            csv_path = input("Please provide the path to the CSV file: ").strip()
-            try:
-                jobs_list, job_descriptions = load_jobs_from_csv(csv_path)
-            except Exception as e:
-                raise ValueError(f"Error loading CSV file: {e}")
-            print(f"Loaded {len(jobs_list)} jobs from CSV file.")
-            search_type = "csv"
-            job_limit = int(input("Please provide the count of top jobs to show: "))
-        else:
-            # Get job title or company name to search for and compare
-            search_type = input("Please identify if you want to run a search by job or by company: ")
-            while search_type not in ("job","company"):
-                search_type = input("Invalid type. Please specify whether to search by job or by company: ")
-            # Initialize variables - only one will be used based on search type
-            if search_type == "job":
-                job_title = input("Please provide the job title you would like to analyze job descriptions for: ")
-            elif search_type == "company":
-                company_name = input("Please provide the company name you would like to search for: ")
+    if not jobs_list:
+        raise HTTPException(status_code=404, detail="No jobs found matching the criteria.")
 
-            interval = int(input("Please provide the number of days you would like to go back: "))
-            lim = int(input("Please provide the amount of jobs with the title you would like to limit to: "))
-            job_limit = int(input("Please provide the count of top jobs to show: "))
+    common_skills_text = ""
+    projects_text = ""
 
-            sql_query = create_sql_query(job_title, company_name, search_type, interval, lim)
+    if search_type in ("job", "csv") and job_descriptions:
+        gem_skills_query = f'''
+        The following is a list of job descriptions from similar jobs. Please return the following in Markdown format:
+        - Top 10 responsibilities in the job description, from most frequent to least frequent
+        - Top 10 skills in the job description, from most frequent to least frequent
+        - Top 10 requirements in the job description, from most frequent to least frequent
+        - Any certifications that commonly appear
 
-            # Execute SQL query using the SSH connector module
-            try:
-                jobs_list, job_descriptions = pull_sql_data(sql_query)
-            except Exception as e:
-                raise e
-            
-            print(f"Processing {len(jobs_list)} jobs...")
+        Ignore any industry specific experience, certifications, etc.
 
-        if search_type in ("job"):
-            gem_skills_query = f'''
-            The following is a list of job descriptions from similar jobs. Please return the following in Markdown format:
-            - Top 10 responsibilities in the job description, from most frequent to least frequent
-            - Top 10 skills in the job description, from most frequent to least frequent
-            - Top 10 requirements in the job description, from most frequent to least frequent
-            - Any certifications that commonly appear
-
-            Ignore any industry specific experience, certifications, etc.
-
-            job_descriptions: {'\n'.join(job_descriptions)}
-            ''' 
-
-            assert gem_conn is not None, "Gemini connection required in production mode."
+        job_descriptions: {'\n'.join(job_descriptions[:20])}
+        ''' 
+        try:
             common_skills_response = gem_conn.models.generate_content(
                 model="gemini-3-flash-preview",
                 contents=gem_skills_query
             )
+            common_skills_text = common_skills_response.text or ""
 
-            ### print(common_skills_response)
-
-            # Run call to Gemini to get suggestions on what projects to build to demonstrate the skills
             gem_projects_query = f'''
             The following is a list of top responsibilities for a specific job type, top skills for this job type, top requirements for this job type, and any certifications that are common for this job type. Return a list of projects you would suggest for someone trying to get into this role
             
             # Response of responsibilities, skills, requirements, and certifications
-            {common_skills_response.text}
+            {common_skills_text}
             '''
-
             projects_response = gem_conn.models.generate_content(
                 model="gemini-3-flash-preview",
                 contents=gem_projects_query
             )
-
-            # Write Gemini responses to report
-            common_skills_text = common_skills_response.text or ""
             projects_text = projects_response.text or ""
-        else:
-            common_skills_text = ""
-            projects_text = ""
-
-    # Run local call to LM-Studio to compare resume and user profile to list of jobs and 
-    # identify the top 3 jobs that would suggest targeting
-
-
-
-    # Write LM-Studio responses to report
+        except Exception as e:
+            logging.error(f"Gemini API error: {e}")
 
     templates = {
         "template_1": PromptTemplate(
@@ -411,44 +381,14 @@ Return JSON only.
     [/User_Profile]
 """
         )
-
     }
 
-    # Step 0: define output structure
-    # 1. Define the output structure
-    class JobFit(BaseModel):
-        job_id: str
-        job_name: str
-        company_name: str
-        matching_skills: List[str]
-        missing_skills: List[str]
-        match_score: int = Field(description="Score from 0-100")
-        reasoning: str = Field(description="Brief explanation of why this is a top match")
-
-    class ExtractCandateInfo(BaseModel):
-        skills: list
-        tools: list
-        industries: list
-        years_experience: str
-        seniority: str
-        roles: list
-        summary: str
-
-    class JobRequirements(BaseModel):
-        job_id: int
-        job_name: str
-        company_name: str
-        requirements: List[str]
-
-    # Create chains for each template
     chain_1 = langchain_connector.create_json_chain(templates["template_1"].template)
     chain_2 = langchain_connector.create_json_chain(templates["template_2"].template)
     chain_3 = langchain_connector.create_json_chain(templates["template_3"].template)
     chain_4 = langchain_connector.create_simple_chain(templates["template_4"].template)
 
-    ## Step 1: loop over job descriptions with langchain call to convert into list of requirements and qualifications and tie back to job id and job name as new list of dicts
     new_job_list = []
-    print("[1/5] Converting job description into list of requirements...")
     for job in jobs_list:   
         template_1_output = await invoke_with_retry(
             chain_1,
@@ -460,12 +400,7 @@ Return JSON only.
             },
             lambda x: isinstance(x, dict) and 'requirements' in x
         )
-
-        # Validate the output
         validated_job = JobRequirements(**template_1_output)
-
-        print(f"Processing job: {validated_job.job_name} at {validated_job.company_name}")
-        
         new_job_list.append({
             'job_id': str(validated_job.job_id),
             'job_name': validated_job.job_name,
@@ -473,30 +408,16 @@ Return JSON only.
             'requirements': validated_job.requirements
         })
 
-    print(f"New Job List: {new_job_list}")
-
-    ## Step 2: extract candidate information
-    print("[2/5] Extracting candidate information...")
     try:
         candidate_info = await invoke_with_retry(
             chain_2,
-            {
-                "resume": resume
-            },
+            {"resume": resume},
             lambda x: isinstance(x, dict) and 'skills' in x and 'summary' in x
         )
-        print(f"Raw Response: {candidate_info}")
-        # Validate the response against our Pydantic model
         validated_candidate_info = ExtractCandateInfo(**candidate_info)
     except Exception as e:
-        print(f"JSON Validation Error: {e}")
-        # Fallback or retry logic could go here
-        raise
-    
+        raise HTTPException(status_code=500, detail=f"Error extracting candidate info: {e}")
 
-
-    ## Step 3: Compare skills to job description
-    print("[3/5] Comparing skills to job description...")
     ranking_analysis = []
     for job in new_job_list:
         template_3_output = await invoke_with_retry(
@@ -510,10 +431,9 @@ Return JSON only.
         )
         validated_matches = JobFit(**template_3_output)
         ranking_analysis.append(template_3_output)
+    
     top_jobs = sorted(ranking_analysis, key=lambda x: x['match_score'], reverse=True)[:job_limit]
 
-    ## Step 4: run single prompt with top 3 to make suggestions on how to adjust resume for better fit
-    print("[4/5] Generating resume adjustment suggestions...")
     resume_suggestions = await invoke_with_retry(
         chain_4,
         {
@@ -524,19 +444,31 @@ Return JSON only.
         lambda x: isinstance(x, str) and len(x) > 0
     )
 
-    ## Step 5: write report to docx showing details on top 3 jobs and suggestions on how to better fit them before applying
-    print("[5/5] Generating final report...")
-    # We format the LM Studio results into a string to append or pass to your docx generator
     pcm = ""
     for match in top_jobs:
         pcm += f"\nJOB ID: {match['job_id']}\nJOB NAME: {match['job_name']}\nCOMPANY NAME: {match['company_name']}\nMATCH SCORE: {match['match_score']}%\nREASONING: {match['reasoning']}\n"
     
     adjustments = f"{resume_suggestions}"
 
-    # Append the findings to your existing report generation logic
-    # (Assuming generate_job_report can be called again or handles appending)
-    generate_job_report(job_title, company_name, common_skills_text, projects_text, pcm, adjustments)
+    filename = generate_job_report(job_title, company_name, common_skills_text, projects_text, pcm, adjustments)
+
+    return {
+        "job_title": job_title,
+        "company_name": company_name,
+        "common_skills": common_skills_text,
+        "projects": projects_text,
+        "matches": top_jobs,
+        "adjustments": adjustments,
+        "filename": filename
+    }
+
+@app.get("/api/download/{filename}")
+async def download_report(filename: str):
+    file_path = os.path.join("output", filename)
+    if os.path.exists(file_path):
+        return FileResponse(path=file_path, filename=filename, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    raise HTTPException(status_code=404, detail="File not found")
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

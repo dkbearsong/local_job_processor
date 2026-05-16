@@ -51,8 +51,15 @@ def generate_job_report(job_title: str, company_name: str, skills_text: str, pro
     # Format: YYYY-MM-DD_[job_title]_title report.docx
     today_str = datetime.now().strftime("%Y-%m-%d")
     # Clean job title to remove characters that might be invalid for filenames
-    clean_job_title = "".join([c for c in job_title if c.isalnum() or c in (' ', '-', '_')]).strip()
-    filename = f"{today_str}_{clean_job_title}_title report.docx"
+    if job_title != "":
+        clean_job_title = "".join([c for c in job_title if c.isalnum() or c in (' ', '-', '_')]).strip()
+        filename = f"{today_str}_{clean_job_title}_title report.docx"
+    elif company_name != "":
+        clean_company_name = "".join([c for c in company_name if c.isalnum() or c in (' ', '-', '_')]).strip()
+        filename = f"{today_str}_{clean_company_name}_company report.docx"
+    else:
+        filename = f"{today_str}_general report.docx"
+    
     filepath = os.path.join(output_dir, filename)
 
     # 3. Create the Word Document
@@ -81,5 +88,7 @@ def generate_job_report(job_title: str, company_name: str, skills_text: str, pro
     try:
         doc.save(filepath)
         print(f"Successfully generated report: {filepath}")
+        return filename
     except Exception as e:
         print(f"Failed to save report: {e}")
+        return None
