@@ -23,6 +23,7 @@ from app.report_generator import generate_job_report
 from app.lm_connector import create_lm_connection
 from app.langchain_caller import LangchainConnector
 
+# FastAPI App Setup
 app = FastAPI(title="Local Job Processor API")
 
 app.add_middleware(
@@ -36,9 +37,15 @@ app.add_middleware(
 setup_logging("project_errors.log")
 sys.excepthook = exception_handler
 
+# Mock Response Class for Offline/Test mode
+class MockResponse:
+    def __init__(self, text: str):
+        self.text = text
+
 ############################## Helper Functions ####################################
 
 def connect_gemini(gem_key: str | None):
+    """Builds a connection to Google Gemini's API to make requests and returns the client."""
     try:
         client = genai.Client(api_key=gem_key)
         return client
@@ -46,15 +53,17 @@ def connect_gemini(gem_key: str | None):
         print(f"Gemini connection error: {e}")
         return None
 
-def connect_lms(lm_api:str):
+def connect_lms(lm_api: str):
+    """Builds a connection to a local install of LM Studio, taking in the API path as a variable and returns the client."""
     try:
+        # LM Studio uses an OpenAI-compatible endpoint
         client = OpenAI(base_url=lm_api, api_key="lm-studio")
         return client
     except Exception as e:
         print(f"LM Studio connection error: {e}")
         return None
     
-def create_sql_query(job_title: str, company_name: str, type:str, limit: int = 3, minusDays:int = 7):
+def create_sql_query(job_title: str, company_name: str, type: str, limit: int = 3, minusDays: int = 7):
     sql_query = f'''
     SELECT j.id, j.job_name, c.company_name, j.job_summary
     FROM job j
@@ -71,8 +80,9 @@ def create_sql_query(job_title: str, company_name: str, type:str, limit: int = 3
     '''
     return sql_query
 
-def pull_sql_data(query:str):
+def pull_sql_data(query: str):
     results = execute_query_with_env_vars(query)
+    # We keep the full row dict so we can reference job_id and job_name later
     jl = [row for row in results]
     jd = [row['job_summary'] for row in jl if 'job_summary' in row]
     return jl, jd
@@ -119,7 +129,7 @@ def file_to_string(file_name):
                     text += page_text + "\n"
             return text
     elif file_name.endswith(".docx"):
-        file_reader= Document(file_name)
+        file_reader = Document(file_name)
         text = "\n".join([paragraph.text for paragraph in file_reader.paragraphs])
         return text
     elif file_name.lower().endswith(".txt"):
@@ -152,7 +162,7 @@ class JobFit(BaseModel):
     match_score: int = Field(description="Score from 0-100")
     reasoning: str = Field(description="Brief explanation of why this is a top match")
 
-class ExtractCandateInfo(BaseModel):
+class ExtractCandidateInfo(BaseModel):
     skills: list
     tools: list
     industries: list
@@ -178,6 +188,71 @@ async def analyze_jobs(
     job_limit: int = Form(3),
     csv_file: UploadFile = File(None)
 ):
+    app_mode = os.getenv("APP_MODE", "production").lower()
+
+    if app_mode == "test":
+        # --- TEST / MOCK MODE ---
+        logging.info("Running analyze_jobs in TEST mode with mock responses.")
+        
+        common_skills_text = "Dummy Skills:\n- Python\n- SQL\n- FastAPI\n- React\n- Project Management\n- Technical Support\n- Troubleshooting\n- Communication\n- Linux\n- Docker"
+        projects_text = "Dummy Projects:\n1. Build a local job analyzer web application using FastAPI and React.\n2. Design and query a PostgreSQL database to manage job listings.\n3. Create an automated report generator that outputs DOCX files."
+        
+        top_jobs = [
+            {
+                "job_id": "999",
+                "job_name": "Mock Applied AI Engineer",
+                "company_name": "Mock AI Corp",
+                "matching_skills": ["Python", "FastAPI"],
+                "missing_skills": ["React", "Docker"],
+                "match_score": 90,
+                "reasoning": "The candidate has strong Python and FastAPI experience, making them a great fit for building robust backend services, though they need to pick up React and Docker."
+            },
+            {
+                "job_id": "998",
+                "job_name": "Mock Technical Support Lead",
+                "company_name": "Mock Tech Solutions",
+                "matching_skills": ["Technical Support", "Troubleshooting", "Communication"],
+                "missing_skills": ["Linux"],
+                "match_score": 85,
+                "reasoning": "Excellent match for support and troubleshooting skills, with minor gaps in advanced Linux admin tools."
+            },
+            {
+                "job_id": "997",
+                "job_name": "Mock Full-Stack Engineer",
+                "company_name": "Mock Web Ventures",
+                "matching_skills": ["Python", "FastAPI", "React"],
+                "missing_skills": ["Docker", "Kubernetes"],
+                "match_score": 80,
+                "reasoning": "Good overlap with frontend and backend requirements, with modern framework experience."
+            }
+        ]
+        
+        adjustments = "### Resume Adjustments suggestions:\n1. **Highlight FastAPI/React Integration**: Emphasize hands-on experience in building full-stack applications.\n2. **Include Docker Projects**: List a containerized project to show cloud-native capability."
+        
+        pcm = ""
+        for match in top_jobs[:job_limit]:
+            pcm += f"\nJOB ID: {match['job_id']}\nJOB NAME: {match['job_name']}\nCOMPANY NAME: {match['company_name']}\nMATCH SCORE: {match['match_score']}%\nREASONING: {match['reasoning']}\n"
+            
+        filename = generate_job_report(
+            job_title or "Test Job",
+            company_name or "Test Company",
+            common_skills_text,
+            projects_text,
+            pcm,
+            adjustments
+        )
+        
+        return {
+            "job_title": job_title or "Test Job",
+            "company_name": company_name or "Test Company",
+            "common_skills": common_skills_text,
+            "projects": projects_text,
+            "matches": top_jobs[:job_limit],
+            "adjustments": adjustments,
+            "filename": filename
+        }
+
+    # --- PRODUCTION MODE ---
     gem_key = os.getenv("GEMINI_KEY")
     lm_port = os.getenv("LM_STUDIO_PORT", "1234")
     lm_model = os.getenv("LM_STUDIO_MODEL", "local-model")
@@ -205,12 +280,14 @@ async def analyze_jobs(
 
     try:
         resume = file_to_string(resume_file) if resume_file else ""
-    except Exception:
+    except Exception as e:
+        logging.error(f"Error loading resume file: {e}")
         resume = ""
         
     try:
         profile = file_to_string(profile_file) if profile_file else ""
-    except Exception:
+    except Exception as e:
+        logging.error(f"Error loading profile file: {e}")
         profile = ""
 
     jobs_list = []
@@ -234,6 +311,7 @@ async def analyze_jobs(
         if search_type == "company" and not company_name:
             raise HTTPException(status_code=400, detail="Company name is required for company search.")
         
+        # Parameters ordered correctly: job_title, company_name, type, limit, minusDays
         sql_query = create_sql_query(job_title, company_name, search_type, lim, interval)
         try:
             jobs_list, job_descriptions = pull_sql_data(sql_query)
@@ -414,7 +492,7 @@ Return JSON only.
             {"resume": resume},
             lambda x: isinstance(x, dict) and 'skills' in x and 'summary' in x
         )
-        validated_candidate_info = ExtractCandateInfo(**candidate_info)
+        validated_candidate_info = ExtractCandidateInfo(**candidate_info)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error extracting candidate info: {e}")
 

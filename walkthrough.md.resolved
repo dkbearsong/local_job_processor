@@ -1,0 +1,45 @@
+# Web Interface Walkthrough
+
+I have successfully transformed the CLI-based application into a modern web application consisting of a FastAPI backend and a React (Vite + TailwindCSS) frontend.
+
+## Changes Made
+
+### Backend (`main.py` -> FastAPI)
+- Replaced the CLI script with a **FastAPI** application.
+- Added `fastapi`, `uvicorn`, and `python-multipart` to `requirements.txt`.
+- Created the `POST /api/analyze` endpoint which:
+  - Accepts search parameters or a CSV file upload via `multipart/form-data`.
+  - Takes an optional `lm_studio_api` endpoint string to override the `.env` default.
+  - Returns the comprehensive job analysis, including extracted skills, missing skills, match scores, reasoning, and suggested projects.
+- Modified `app/report_generator.py` to return the filename of the generated `.docx` document.
+- Created the `GET /api/download/{filename}` endpoint to serve the generated report files to the frontend.
+
+### Frontend (`frontend/`)
+- Initialized a **Vite + React** project.
+- Configured **TailwindCSS** (v4) with a modern dark theme and custom CSS variables.
+- Configured Vite proxy to route `/api` requests to the FastAPI backend running on port 8000.
+- Created `FormComponent` that handles all input configurations:
+  - **SQL DB** vs **CSV Upload** switching.
+  - Search by Job Title or Company.
+  - Setting the Days Back and Limit count.
+- Added a configuration drop-down to the header to let the user set their **LM Studio API Endpoint** directly from the UI, persisting it locally in `localStorage` so it doesn't need to be entered every time.
+- Created `ReportViewer` to elegantly render the parsed JSON data using `react-markdown` and custom glassmorphic cards.
+- Integrated a "Download .docx" button that fetches the report from the backend.
+
+## How to Run
+
+1. **Start the Backend**
+   Navigate to the root directory and start the server using uvicorn:
+   ```bash
+   source .venv/bin/activate
+   uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+   ```
+
+2. **Start the Frontend**
+   In a new terminal, navigate to the `frontend/` directory and run Vite:
+   ```bash
+   cd frontend
+   npm run dev
+   ```
+
+3. Open your browser to the URL provided by Vite (typically `http://localhost:5173`). Configure your LM Studio API in the settings gear at the top right, fill out the search form, and click **Run Analysis**!
