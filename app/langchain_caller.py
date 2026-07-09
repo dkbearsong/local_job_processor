@@ -17,6 +17,7 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.tools import Tool
 from langchain_community.llms import Ollama
 from langchain_openai import OpenAI, ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 import logging
 
 from app.robust_json_parser import RobustJsonOutputParser
@@ -87,6 +88,15 @@ class LangchainConnector:
             else:
                 # Default to local Ollama instance
                 self.llm = Ollama(model=self.model_name)
+        elif self.provider == "gemini":
+            # For Gemini, use ChatGoogleGenerativeAI
+            if self.api_key:
+                self.llm = ChatGoogleGenerativeAI(
+                    model=self.model_name,
+                    google_api_key=self.api_key
+                )
+            else:
+                self.llm = ChatGoogleGenerativeAI(model=self.model_name)
         else:
             # Fallback to default OpenAI
             self.llm = ChatOpenAI(model_name=self.model_name)

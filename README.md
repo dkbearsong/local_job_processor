@@ -35,7 +35,7 @@ Before running the application, ensure you have the following installed:
 
 1. Clone this repository or download the source files.
 2. **Backend Setup**: Install the required Python dependencies by running `pip install -r requirements.txt`
-3. Set up .env file as shown in the [Configuration \(\`.env\`\) section](#env)
+3. Set up .env file as shown in the [Configuration (`.env`) section](#env)
 4. **Backend Setup**: Install the required Python dependencies:
    ```bash
    pip install -r requirements.txt

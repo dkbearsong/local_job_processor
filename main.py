@@ -22,6 +22,7 @@ from app.postgres_ssh_connector import execute_query_with_env_vars
 from app.report_generator import generate_job_report
 from app.lm_connector import create_lm_connection
 from app.langchain_caller import LangchainConnector
+from app.resume_generator import generate_resume_workflow
 
 # FastAPI App Setup
 app = FastAPI(title="Local Job Processor API")
@@ -539,6 +540,113 @@ Return JSON only.
         "adjustments": adjustments,
         "filename": filename
     }
+
+@app.post("/api/generate_resume")
+async def generate_resume(
+    job_source: str = Form("file"),
+    job_id: str = Form(None),
+    lm_studio_api: str = Form(None),
+    job_desc_file: UploadFile = File(None),
+    profile_file: UploadFile = File(None),
+    output_filename: str = Form("generated_resume")
+):
+    app_mode = os.getenv("APP_MODE", "production").lower()
+    
+    if app_mode == "test":
+        logging.info("Running generate_resume in TEST mode.")
+        import asyncio
+        await asyncio.sleep(2)
+        md_text = f"# Test Resume\n\nThis is a mock generated resume. Source: {job_source}, Job ID: {job_id}"
+        os.makedirs("output", exist_ok=True)
+        if not output_filename.endswith(".docx"):
+            output_filename += ".docx"
+        with open(os.path.join("output", output_filename), "w") as f:
+            f.write(md_text) # just write text for mock docx
+        return {
+            "markdown": md_text,
+            "filename": output_filename,
+            "comparison": f"### Mock Comparison\nFit rating for Job ID {job_id if job_id else 'file'}: 95/100"
+        }
+
+    gem_key = os.getenv("GEMINI_KEY")
+    lm_port = os.getenv("LM_STUDIO_PORT", "1234")
+    lm_model = os.getenv("LM_STUDIO_MODEL", "local-model")
+    lm_api = lm_studio_api if lm_studio_api else os.getenv("LM_STUDIO_API")
+
+    if not gem_key:
+        raise HTTPException(status_code=500, detail="GEMINI_KEY environment variable is not set.")
+    if not lm_api:
+        raise HTTPException(status_code=500, detail="LM_STUDIO_API is not provided via form or environment.")
+
+    # Read job description based on job_source
+    job_desc = ""
+    if job_source == "sql":
+        if not job_id:
+            raise HTTPException(status_code=400, detail="job_id is required when job_source is 'sql'")
+        if not str(job_id).strip().isdigit():
+            raise HTTPException(status_code=400, detail="Invalid job_id format. Must be numeric.")
+        
+        sql_query = f"SELECT job_summary FROM job WHERE id = {job_id};"
+        try:
+            results = execute_query_with_env_vars(sql_query)
+            rows = [row for row in results]
+            if not rows or 'job_summary' not in rows[0] or not rows[0]['job_summary']:
+                raise HTTPException(status_code=404, detail=f"Job with ID {job_id} not found or has no summary in database.")
+            job_desc = rows[0]['job_summary']
+        except Exception as e:
+            if isinstance(e, HTTPException):
+                raise e
+            raise HTTPException(status_code=500, detail=f"Database error when fetching job: {e}")
+    else:
+        if not job_desc_file or not job_desc_file.filename:
+            raise HTTPException(status_code=400, detail="Job description file is required when job_source is 'file'")
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(job_desc_file.filename)[1]) as tmp:
+                tmp.write(await job_desc_file.read())
+                tmp_job_path = tmp.name
+            job_desc = file_to_string(tmp_job_path)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error reading job description file: {e}")
+        finally:
+            if 'tmp_job_path' in locals(): os.remove(tmp_job_path)
+
+    # Read uploaded profile or fallback to .env PROFILE
+    profile = ""
+    if profile_file and profile_file.filename:
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(profile_file.filename)[1]) as tmp:
+                tmp.write(await profile_file.read())
+                tmp_profile_path = tmp.name
+            profile = file_to_string(tmp_profile_path)
+        except Exception as e:
+            logging.error(f"Error reading uploaded profile file: {e}")
+        finally:
+            if 'tmp_profile_path' in locals(): os.remove(tmp_profile_path)
+    else:
+        profile_env_path = os.getenv("PROFILE")
+        if profile_env_path:
+            try:
+                profile = file_to_string(profile_env_path)
+            except Exception as e:
+                logging.error(f"Error reading profile from .env path: {e}")
+
+    try:
+        final_markdown, docx_filename, comparison_response = generate_resume_workflow(
+            job_desc=job_desc,
+            profile=profile,
+            output_filename=output_filename,
+            lm_api=lm_api,
+            lm_port=int(lm_port),
+            lm_model=lm_model,
+            gem_key=gem_key
+        )
+        return {
+            "markdown": final_markdown,
+            "filename": docx_filename,
+            "comparison": comparison_response
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating resume: {e}")
 
 @app.get("/api/download/{filename}")
 async def download_report(filename: str):
