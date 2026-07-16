@@ -7,7 +7,7 @@ and can be integrated with Langchain for LLM operations.
 import os
 from dotenv import load_dotenv
 import requests
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from urllib.parse import urlparse
 from dataclasses import dataclass
 
@@ -110,6 +110,52 @@ def create_lm_connection(
     """Create and return a configured LMConnection instance"""
     config = LMConfig(host=host, port=port, model_name=model_name)
     return LMConnection(config)
+
+
+def create_gemini_client(gem_key: Optional[str]) -> Any:
+    """Builds a connection to Google Gemini's API and returns the client."""
+    import google.genai as genai
+    if not gem_key:
+        raise ValueError("GEMINI_KEY environment variable is not set.")
+    try:
+        client = genai.Client(api_key=gem_key)
+        return client
+    except Exception as e:
+        print(f"Gemini connection error: {e}")
+        return None
+
+
+def create_gemini_langchain_connector(gem_key: str, model_name: str = "gemini-3-flash-preview") -> Any:
+    """Creates a LangchainConnector for Gemini using ChatGoogleGenerativeAI."""
+    from app.langchain_caller import LangchainConnector
+    return LangchainConnector(
+        model_name=model_name,
+        provider="gemini",
+        api_key=gem_key
+    )
+
+
+def create_lmstudio_connector(lm_api: str, lm_port: int, lm_model: str) -> Any:
+    """Creates a LangchainConnector for LM Studio with normalized base URL"""
+    from app.langchain_caller import LangchainConnector
+    
+    if lm_api.startswith("http://") or lm_api.startswith("https://"):
+        parsed = urlparse(lm_api)
+        if not parsed.port:
+            base_url = f"{parsed.scheme}://{parsed.hostname}:{lm_port}/v1"
+        else:
+            base_url = lm_api
+            if not base_url.endswith("/v1") and not base_url.endswith("/v1/"):
+                base_url = base_url.rstrip("/") + "/v1"
+    else:
+        base_url = f"http://{lm_api}:{lm_port}/v1"
+        
+    return LangchainConnector(
+        model_name=lm_model,
+        provider="lmstudio",
+        base_url=base_url
+    )
+
 
 # Example usage and testing
 if __name__ == "__main__":

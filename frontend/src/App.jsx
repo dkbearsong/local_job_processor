@@ -194,7 +194,12 @@ function App() {
                 <h2 className="text-2xl font-bold flex items-center gap-2">
                   <FileCode className="text-primary" /> {activeTab === 'generator' ? 'Job & Resume Comparison' : 'Generated Resume'}
                 </h2>
-                {resumeData.filename && (
+                {activeTab === 'generator' && resumeData.folderPath && (
+                  <span className="text-sm text-green-400 font-medium bg-green-400/10 px-3 py-1.5 rounded-full border border-green-400/20">
+                    Files saved to: {resumeData.folderPath}
+                  </span>
+                )}
+                {activeTab !== 'generator' && resumeData.filename && (
                   <button 
                     onClick={() => handleDownload(resumeData.filename)}
                     className="flex items-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded-md font-medium transition-colors shadow-lg shadow-primary/20"

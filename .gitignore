@@ -3,8 +3,13 @@
 documents/
 output/
 __pycache__/
+src/
+tests/
 
 # Files
 .env
 project_errors.log
 example.csv
+test_post.py
+walkthrough.md.resolved
+generate_test.py

@@ -1,5 +1,12 @@
 import logging
 import sys
+import os
+import json
+from datetime import datetime
+from typing import Any
+
+# Check for debug flag to log full prompts and responses
+DEBUG_PROMPTS = os.getenv("DEBUG_PROMPTS", "").lower() in ("1", "true", "yes")
 
 def setup_logging(log_file="app_errors.log"):
     """
@@ -40,3 +47,31 @@ def exception_handler(exc_type, exc_value, exc_traceback):
 
     # Log the unhandled exception with full traceback details
     logging.error("Uncaught Exception:", exc_info=(exc_type, exc_value, exc_traceback))
+
+def log_debug_prompt(step_name: str, rendered_prompt: str, response: Any):
+    """
+    Log the full rendered prompt and response for a step to a debug log file.
+    Only active when DEBUG_PROMPTS env var is set to true/1/yes.
+    """
+    if not DEBUG_PROMPTS:
+        return
+
+    os.makedirs("output", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = f"output/debug_prompts_{timestamp}.log"
+
+    with open(log_filename, "a", encoding="utf-8") as f:
+        f.write(f"\n{'='*80}\n")
+        f.write(f"STEP: {step_name}\n")
+        f.write(f"TIMESTAMP: {datetime.now().isoformat()}\n")
+        f.write(f"{'='*80}\n")
+        f.write("\n--- FULL PROMPT SENT TO LLM ---\n")
+        f.write(rendered_prompt)
+        f.write("\n\n--- FULL RESPONSE FROM LLM ---\n")
+        if isinstance(response, dict):
+            f.write(json.dumps(response, indent=2, default=str))
+        else:
+            f.write(str(response))
+        f.write(f"\n{'='*80}\n\n")
+
+    logging.info(f"Debug prompt/response logged to {log_filename}")

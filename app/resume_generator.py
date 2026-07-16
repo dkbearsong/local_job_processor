@@ -2,18 +2,18 @@ import os
 import json
 import logging
 from typing import Dict, Any, List
-from datetime import datetime
 import markdown
 from docx import Document
 from htmldocx import HtmlToDocx
 from langchain_core.prompts import PromptTemplate
 
-from app.langchain_caller import LangchainConnector
+# Helper modules
+from app.logger import log_debug_prompt, DEBUG_PROMPTS
+from app.profile_verifier import verify_content_against_profile
+from app.resume_formatter import format_resume_docx
+from app.lm_connector import create_lmstudio_connector, create_gemini_langchain_connector
 
-# Check for debug flag to log full prompts and responses
-DEBUG_PROMPTS = os.getenv("DEBUG_PROMPTS", "").lower() in ("1", "true", "yes")
-
-# Setup placeholder prompts per user instructions
+# Setup prompts
 RESUME_GENERATION_STEPS = [
     {
         "step_name": "keyword_extractor",
@@ -35,7 +35,7 @@ RESUME_GENERATION_STEPS = [
         "step_name": "resume_skills_writeup",
         "llm": "lmstudio",
         "model": "local-model",
-        "prompt": "Take the following job description, skills section from a user's profile, and job pain points. Write a skills segment from a resume that demonstrates the user can address the pain points using the provided skills section. Exclude points that do not demonstrate competency at solving these pain points and do not show up in the job description, either directly or implied.\n\nThe skills section should contain a comma separated list of skills grouped together by category and be related directly to the job description and, more importantly, solving the pain points the job is trying to fix. Each skill should be no more than a couple of words at most, preferrably a single word if possible\n\n**USE ONLY THE EXACT WORDS PROVIDED IN THE PROFILE DOC. DO NOT REWRITE THE BULLET POINTS**\n\nJob Description:\n{job_desc}\n\nSkills Profile:\n{skills}\n\nPain Points:\n{job_pain_points}",
+        "prompt": "Take the following job description, skills section from a user's profile, and job pain points. Write a skills segment from a resume that demonstrates the user can address the pain points using the provided skills section. Exclude points that do not demonstrate competency at solving these pain points and do not show up in the job description, either directly or implied.\n\nThe skills section should contain a comma separated list of skills grouped together by category, with the category title in bold followed by a colon. Example format: `**Category Name:** Skill 1, Skill 2`. DO NOT include bullet points for skills. You MAY add a colon after the category title even if it wasn't in the original profile.\n\n**USE ONLY THE EXACT WORDS PROVIDED IN THE PROFILE DOC. DO NOT REWRITE THE BULLET POINTS**\n\nJob Description:\n{job_desc}\n\nSkills Profile:\n{skills}\n\nPain Points:\n{job_pain_points}",
         "output_format": "markdown",
         "output_structure": ""
     },
@@ -43,9 +43,10 @@ RESUME_GENERATION_STEPS = [
         "step_name": "resume_projects_writeup",
         "llm": "lmstudio",
         "model": "local-model",
-        "prompt": "Take the following job description, projects section from a user's profile, and job pain points. Write a projects segment from a resume that demonstrates the user can address the pain points using the provided projects section. Exclude projects and points that do not demonstrate competency at solving these pain points.\n\n**USE ONLY THE EXACT WORDS PROVIDED IN THE PROFILE DOC. DO NOT REWRITE THE BULLET POINTS**\n\nJob Description:\n{job_desc}\n\nProjects Profile:\n{projects}\n\nPain Points:\n{job_pain_points}",
+        "prompt": "Take the following job description, projects section from a user's profile, and job pain points. Write a projects segment from a resume that demonstrates the user can address the pain points using the provided projects section. Exclude projects and points that do not demonstrate competency at solving these pain points.\n\nMake sure to include the project hyperlink if it is available in the profile.\n\n**USE ONLY THE EXACT WORDS PROVIDED IN THE PROFILE DOC. DO NOT REWRITE THE BULLET POINTS**\n\nJob Description:\n{job_desc}\n\nProjects Profile:\n{projects}\n\nPain Points:\n{job_pain_points}",
         "output_format": "markdown",
-        "output_structure": ""
+        "output_structure": "",
+        "verify_against_profile": True
     },
     {
         "step_name": "resume_experience_writeup",
@@ -53,13 +54,14 @@ RESUME_GENERATION_STEPS = [
         "model": "local-model",
         "prompt": "Take the following job description, experience section from a user's profile, and job pain points. Write an experience segment from a resume that demonstrates the user can address the pain points using the provided experience section. Exclude points that do not demonstrate competency at solving these pain points.\n\n**USE ONLY THE EXACT WORDS PROVIDED IN THE PROFILE DOC. DO NOT REWRITE THE BULLET POINTS**\n\nJob Description:\n{job_desc}\n\nExperience Profile:\n{experience}\n\nPain Points:\n{job_pain_points}",
         "output_format": "markdown",
-        "output_structure": ""
+        "output_structure": "",
+        "verify_against_profile": True
     },
     {
         "step_name": "resume_summary_writeup",
         "llm": "lmstudio",
         "model": "local-model",
-        "prompt": "Attached is a job description, a user profile, and pain points from the job description with suggested solutions. Write a three-sentence summary in a **telegraphic writing style** (stripping unnecessary verbs and filler words) that accomplishes the following:\n\n1. **Establish Relevance:** Immediately connect the user's core identity and experience to the specific role, avoiding generic statements.\n2. **Highlight Tech & Fit:** Clearly state the user's tech stack related to this job and how their background aligns with the company's needs.\n3. **Prove Impact:** Include **two notable achievements backed by specific metrics** that demonstrate how the user can directly solve the company's identified pain points.\n\nThe summary must prioritize **quantifiable impact** over duty lists, ensuring every word drives home the candidate's value proposition.\n\nJob Description:\n{job_desc}\n\nUser Profile:\n{user_profile_str}\n\nPain Points:\n{job_pain_points}",
+        "prompt": "Attached is a job description, a user profile, and pain points from the job description with suggested solutions. Write a three-sentence summary in a **telegraphic writing style** (stripping unnecessary verbs and filler words) that accomplishes the following:\n\n1. **Establish Relevance:** Immediately connect the user's core identity and experience to the specific role, avoiding generic statements.\n2. **Highlight Tech & Fit:** Clearly state the user's tech stack related to this job and how their background aligns with the company's needs.\n3. **Prove Impact:** Include **two notable achievements backed by specific metrics** that demonstrate how the user can directly solve the company's identified pain points.\n\nThe summary must prioritize **quantifiable impact** over duty lists, ensuring every word drives home the candidate's value proposition, and it should focus on demonstrating awareness of team's pain points and how the candidate will fix those pain. points.\n\nAvoid using common cliche phrases, terms, and corporate jargon such as the following\n\ndelve, leverage (as a verb), synergy, comprehensive, robust, dynamic, innovative, cutting-edge, meticulous, nuanced, pivotal, realm, tapestry, landscape, holistic, seamless, game-changer, groundbreaking, transformative, unprecedented, best-in-class, paradigm shift, at the intersection of, bridge the gap, consistently, seamlessly, effectively\n\nAnd do not use the following terms without including some evidence in the metrics section to demonstrate it: results-oriented, team player, hard worker, self-starter, detail-oriented, passionate, strategic thinker, expert\n\n-----\nExample Summaries\n-----\n\nDetail-oriented and data-driven Digital Marketer seeking to increase qualified leads and brand awareness for ABC Tech. Proven track record of growing social media engagement by over 40% and managing a monthly ad budget of $50K. Skilled in SEO/SEM strategies and marketing automation platforms to drive measurable results for your growth-focused team.\n\nAccomplished restaurant manager transitioning to corporate project management. Leverages exceptional leadership, budget management and operational efficiency skills honed over 7 years in the hospitality industry. Successfully managed teams of 20+, consistently controlled a $500k+ annual budget and improved customer service ratings by 25%. Eager to apply a proven track record of people and process management to a new challenge.\n\nJob Description:\n{job_desc}\n\nUser Profile:\n{user_profile_str}\n\nPain Points:\n{job_pain_points}",
         "output_format": "markdown",
         "output_structure": ""
     },
@@ -67,7 +69,7 @@ RESUME_GENERATION_STEPS = [
         "step_name": "resume_writeup",
         "llm": "lmstudio",
         "model": "local-model",
-        "prompt": "Take the following resume summary, experience section, skills section, projects section, user contact information, and education section and write a resume no longer than 2 pages from this. Use the attached job description to base how the resume should be organized, and ensure that the top 1/3 of the resume would make you want to follow up with the individual if you were a recruiter. There will also be a list of pain points that the company is likely trying to address with this hire, use this as a reference point to what this resume should be trying to solve.\n\nInclude only the following sections in this order:\n- Contact header\n- Summary\n- Experience\n- Projects\n- Skills\n- Education\n\n**FORMATTING REQUIREMENTS (CRITICAL):**\n- Use proper markdown headers for each section: `## Summary`, `## Experience`, `## Projects`, `## Skills`, `## Education`\n- Use `###` for job titles/company names under Experience\n- Use `- ` for bullet points (each bullet on its own line)\n- Separate sections with exactly ONE blank line\n- Do NOT use bold text (`**`) as section headers - use `##` headers instead\n- Preserve all line breaks exactly as shown in the source material\n\n**USE ONLY THE EXACT WORDS PROVIDED IN THE USER PROMPT. DO NOT REWRITE THE BULLET POINTS**\n\n================================================================================\n\nSummary:\n{resume_summary_writeup}\n\nExperience:\n{resume_experience_writeup}\n\nSkills:\n{resume_skills_writeup}\n\nProjects:\n{resume_projects_writeup}\n\nContact Information:\n{contact_info}\n\nEducation:\n{education}\n\nJob Description:\n{job_desc}\n\nPain Points:\n{job_pain_points}",
+        "prompt": "Take the following resume summary, experience section, skills section, projects section, user contact information, and education section and write a resume no longer than 2 pages from this. Use the attached job description to base how the resume should be organized, and ensure that the top 1/3 of the resume would make you want to follow up with the individual if you were a recruiter. There will also be a list of pain points that the company is likely trying to address with this hire, use this as a reference point to what this resume should be trying to solve.\n\nInclude only the following sections in this order:\n- Contact header\n- Summary\n- Experience\n- Projects\n- Skills\n- Education\n\nFor the projects section, include no more than four projects, preferrably 3 unless additional projects would be helpful for a career transition\n\n**FORMATTING REQUIREMENTS (CRITICAL):**\n- Use proper markdown headers for each section: `## Summary`, `## Experience`, `## Projects`, `## Skills`, `## Education`\n- Use `###` for job titles/company names under Experience\n- Use `###` for project titles, and make sure to include the project hyperlink if it is available in the profile.\n- Use `- ` for bullet points (each bullet on its own line)\n- Separate sections with exactly ONE blank line\n- Do NOT use bold text (`**`) as section headers - use `##` headers instead\n- Preserve all line breaks exactly as shown in the source material\n\n**USE ONLY THE EXACT WORDS PROVIDED IN THE USER PROMPT. DO NOT REWRITE THE BULLET POINTS**\n\n================================================================================\n\nSummary:\n{resume_summary_writeup}\n\nExperience:\n{resume_experience_writeup}\n\nSkills:\n{resume_skills_writeup}\n\nProjects:\n{resume_projects_writeup}\n\nContact Information:\n{contact_info}\n\nEducation:\n{education}\n\nJob Description:\n{job_desc}\n\nPain Points:\n{job_pain_points}",
         "output_format": "markdown",
         "output_structure": ""
     },
@@ -111,7 +113,6 @@ def parse_profile_to_sections(profile_text: str) -> Dict[str, str]:
 
     for line in profile_text.split('\n'):
         if line.startswith('# '):
-            # If this is the first header, save the pre-header content as Contact Info
             if current_section is None and before_first_header:
                 sections["Contact Info"] = '\n'.join(before_first_header).strip()
             if current_section:
@@ -130,43 +131,22 @@ def parse_profile_to_sections(profile_text: str) -> Dict[str, str]:
     return sections
 
 
-def log_debug_prompt(step_name: str, rendered_prompt: str, response: Any):
-    """
-    Log the full rendered prompt and response for a step to a debug log file.
-    Only active when DEBUG_PROMPTS env var is set to true/1/yes.
-    """
-    if not DEBUG_PROMPTS:
-        return
-
-    os.makedirs("output", exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_filename = f"output/debug_prompts_{timestamp}.log"
-
-    with open(log_filename, "a", encoding="utf-8") as f:
-        f.write(f"\n{'='*80}\n")
-        f.write(f"STEP: {step_name}\n")
-        f.write(f"TIMESTAMP: {datetime.now().isoformat()}\n")
-        f.write(f"{'='*80}\n")
-        f.write("\n--- FULL PROMPT SENT TO LLM ---\n")
-        f.write(rendered_prompt)
-        f.write("\n\n--- FULL RESPONSE FROM LLM ---\n")
-        if isinstance(response, dict):
-            f.write(json.dumps(response, indent=2, default=str))
-        else:
-            f.write(str(response))
-        f.write(f"\n{'='*80}\n\n")
-
-    logging.info(f"Debug prompt/response logged to {log_filename}")
-
-
-def generate_resume_workflow(job_desc: str, profile: str, output_filename: str, lm_api: str, lm_port: int, lm_model: str, gem_key: str):
+def generate_resume_workflow(
+    job_desc: str,
+    profile: str,
+    folder_path: str,
+    company_name: str,
+    job_name: str,
+    lm_api: str,
+    lm_port: int,
+    lm_model: str,
+    gem_key: str
+) -> tuple:
     """
     Runs the sequential prompts to generate a tailored resume.
     """
-    # Parse the user profile into sections
     user_profile = parse_profile_to_sections(profile) if profile else {}
 
-    # Build context with job_desc and parsed profile sections
     context: Dict[str, Any] = {
         "job_desc": job_desc,
         "user_profile": user_profile,
@@ -180,22 +160,12 @@ def generate_resume_workflow(job_desc: str, profile: str, output_filename: str, 
 
     connectors = {}
     
-    # Setup LM Studio connector
+    # Centralized connection setup
     if lm_api:
-        base_url = lm_api if lm_api.startswith("http") else f"http://localhost:{lm_port}/v1"
-        connectors["lmstudio"] = LangchainConnector(
-            model_name=lm_model,
-            provider="lmstudio",
-            base_url=base_url
-        )
+        connectors["lmstudio"] = create_lmstudio_connector(lm_api, lm_port, lm_model)
     
-    # Setup Gemini connector
     if gem_key:
-        connectors["gemini"] = LangchainConnector(
-            model_name="gemini-3-flash-preview", # Default, can be overridden per step
-            provider="gemini",
-            api_key=gem_key
-        )
+        connectors["gemini"] = create_gemini_langchain_connector(gem_key)
 
     # Iterate over steps
     for step in RESUME_GENERATION_STEPS:
@@ -212,53 +182,77 @@ def generate_resume_workflow(job_desc: str, profile: str, output_filename: str, 
             raise ValueError(f"Connector for provider '{llm_provider}' is not configured.")
 
         connector = connectors[llm_provider]
-        # Update connector model if different from default
         connector.set_model(model_name=model)
 
-        if output_format == "json":
-            # Append output structure instructions to the prompt if provided
-            full_prompt = prompt_template
-            if output_structure:
-                # Escape curly braces for PromptTemplate compatibility (str.format)
-                escaped_structure = output_structure.replace('{', '{{').replace('}', '}}')
-                full_prompt += f"\n\nRespond ONLY with valid JSON using the following structure: {escaped_structure}"
-            
-            chain = connector.create_json_chain(full_prompt)
-            # Use invoke safely with context mapping
-            try:
-                # Render the prompt with context for debug logging
-                if DEBUG_PROMPTS:
-                    rendered = PromptTemplate.from_template(full_prompt).format(**context)
-                response = chain.invoke(context)
-                # Save result with step_name as the key
-                context[step_name] = response
-                # Log debug info
-                if DEBUG_PROMPTS:
-                    log_debug_prompt(step_name, rendered, response)
-            except Exception as e:
-                logging.error(f"Error in step {step_name}: {e}")
-                context[step_name] = {}
+        verify_enabled = step.get("verify_against_profile", False)
+        max_attempts = 6
+        current_attempt = 1
+        mismatches = []
+        current_prompt_template = prompt_template
 
-        else:
-            # Assume string/markdown output
-            chain = connector.create_simple_chain(prompt_template)
+        while current_attempt <= max_attempts:
+            if current_attempt > 1:
+                logging.info(f"Retrying step: {step_name} (Attempt {current_attempt}/{max_attempts}) due to {len(mismatches)} mismatches.")
+                mismatch_notes = "\n".join([f"- {m}" for m in mismatches])
+                current_prompt_template = (
+                    f"NOTE TO AI: The data in the response contained information not found in the user profile.\n"
+                    f"Specifically, the following information did not match:\n"
+                    f"{mismatch_notes}\n\n"
+                    f"Please repeat the last task. Ensure that you use ONLY the exact words provided in the user profile. DO NOT rewrite, modify, or add any information.\n\n"
+                    f"Last task instructions:\n"
+                    f"{prompt_template}"
+                )
+
+            # Centralized chain initialization and try/except execution block
+            if output_format == "json":
+                full_prompt = current_prompt_template
+                if output_structure:
+                    escaped_structure = output_structure.replace('{', '{{').replace('}', '}}')
+                    full_prompt += f"\n\nRespond ONLY with valid JSON using the following structure: {escaped_structure}"
+                
+                chain = connector.create_json_chain(full_prompt)
+                prompt_to_log = full_prompt
+                fallback_val = {}
+            else:
+                chain = connector.create_simple_chain(current_prompt_template)
+                prompt_to_log = current_prompt_template
+                fallback_val = ""
+
             try:
-                # Render the prompt with context for debug logging
+                rendered = ""
                 if DEBUG_PROMPTS:
-                    rendered = PromptTemplate.from_template(prompt_template).format(**context)
+                    rendered = PromptTemplate.from_template(prompt_to_log).format(**context)
                 response = chain.invoke(context)
-                # Save result with step_name as the key
                 context[step_name] = response
-                # Log debug info
                 if DEBUG_PROMPTS:
                     log_debug_prompt(step_name, rendered, response)
             except Exception as e:
-                logging.error(f"Error in step {step_name}: {e}")
-                context[step_name] = ""
+                logging.error(f"Error in step {step_name} (Attempt {current_attempt}/{max_attempts}): {e}")
+                if current_attempt == max_attempts:
+                    raise
+                context[step_name] = fallback_val
+                current_attempt += 1
+                continue
+
+            if not verify_enabled:
+                break
+
+            response_str = json.dumps(response) if isinstance(response, dict) else str(response)
+            mismatches = verify_content_against_profile(response_str, profile, step_name)
+
+            if not mismatches:
+                logging.info(f"Verification successful for step {step_name} on attempt {current_attempt}.")
+                break
+            else:
+                logging.warning(f"Verification failed for step {step_name} on attempt {current_attempt} with {len(mismatches)} mismatches.")
+                current_attempt += 1
+                if current_attempt > max_attempts:
+                    error_msg = f"Failed to generate valid content for step '{step_name}' after 5 retries. The following information from the response could not be verified in the user profile:\n" + "\n".join([f"- {m}" for m in mismatches])
+                    logging.error(error_msg)
+                    raise ValueError(error_msg)
 
         # Post-processing for specific steps
         if step_name == "keyword_extractor":
-            # Extract keywords list from the JSON response for use in later prompts
             try:
                 if isinstance(context[step_name], dict):
                     kw_list = context[step_name].get("keywords", [])
@@ -271,7 +265,6 @@ def generate_resume_workflow(job_desc: str, profile: str, output_filename: str, 
                 context["keywords"] = "[]"
 
         if step_name == "review_keyword_injection":
-            # Determine which resume to use based on fit_score
             try:
                 if isinstance(context[step_name], dict):
                     fit_score = context[step_name].get("fit_score", 0)
@@ -291,26 +284,37 @@ def generate_resume_workflow(job_desc: str, profile: str, output_filename: str, 
                 logging.error(f"Error processing review_keyword_injection: {e}")
                 context["resume"] = context.get("resume_writeup", "")
 
-    # The resume variable holds the final resume to save to docx
     final_markdown = context.get("resume", "")
-
-    # Get the job_and_resume_comparison response for the frontend
     comparison_response = context.get("job_and_resume_comparison", "")
 
-    # Convert final_markdown to docx
-    os.makedirs("output", exist_ok=True)
-    if not output_filename.endswith(".docx"):
-        output_filename += ".docx"
-        
-    output_path = os.path.join("output", output_filename)
+    os.makedirs(folder_path, exist_ok=True)
+    file_prefix = f"{job_name} - {company_name}"
     
-    # Convert Markdown to HTML
+    # Write Final Report
+    report_filename = f"{file_prefix} - Final Report.md"
+    report_path = os.path.join(folder_path, report_filename)
+    with open(report_path, "w") as f:
+        f.write(comparison_response)
+        
+    # Write Job Pain Points
+    pain_points_filename = f"{file_prefix} - Job Pain Points.md"
+    pain_points_path = os.path.join(folder_path, pain_points_filename)
+    with open(pain_points_path, "w") as f:
+        f.write(context.get("job_pain_points", ""))
+
+    # Write Resume docx
+    docx_filename = f"{file_prefix} - Resume.docx"
+    output_path = os.path.join(folder_path, docx_filename)
+    
     html_content = markdown.markdown(final_markdown)
     
-    # Convert HTML to DOCX
     document = Document()
     new_parser = HtmlToDocx()
     new_parser.add_html_to_document(html_content, document)
     document.save(output_path)
     
-    return final_markdown, output_filename, comparison_response
+    # Format the generated docx
+    # NOTE: To customize the resume layout/formatting style, edit the rules in app/resume_formatter.py
+    format_resume_docx(output_path)
+    
+    return final_markdown, docx_filename, comparison_response

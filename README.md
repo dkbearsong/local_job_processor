@@ -134,6 +134,48 @@ Open your browser to the URL provided by Vite (typically `http://localhost:5173`
 - **Input Modes**: Use the form to switch between **SQL DB** mode and **CSV Upload** mode.
 - **Search**: You can search by Job Title or Company, and adjust the "Days Back" and "Limit" parameters directly in the web interface.
 
+## 🔍 Debug Logging for Resume Generator
+
+The resume generator includes a debug logging feature that captures the full prompt sent to the LLM and the full response received for every step in the generation workflow. This is useful for troubleshooting prompt quality, verifying LLM output, or understanding how the final resume was constructed.
+
+### Enabling Debug Logging
+
+Set the `DEBUG_PROMPTS` environment variable to `true`, `1`, or `yes` before starting the backend:
+
+#### On macOS/Linux
+```bash
+export DEBUG_PROMPTS=true
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+#### On Windows (PowerShell)
+```powershell
+$env:DEBUG_PROMPTS="true"
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Alternatively, add it to your `.env` file:
+```
+DEBUG_PROMPTS=true
+```
+
+### Log Output
+
+When enabled, each resume generation run creates a log file at:
+```
+output/debug_prompts_{timestamp}.log
+```
+
+Each step in the workflow (keyword extraction, pain points analysis, skills writeup, projects writeup, experience writeup, summary, resume assembly, keyword injection, review, and comparison) is logged with:
+- **Step name** — which generation step was executed
+- **Timestamp** — when the step ran
+- **Full prompt sent to LLM** — the complete rendered prompt with all context variables
+- **Full response from LLM** — the raw response returned by the model
+
+### Disabling
+
+To disable, either unset the environment variable, set it to `false`/`0`, or remove it from your `.env` file.
+
 ## 📄 Output
 
 The application generates a `.docx` report (via `generate_job_report`) containing:

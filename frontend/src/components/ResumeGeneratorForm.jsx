@@ -6,7 +6,9 @@ const ResumeGeneratorForm = ({ onSubmit, isLoading }) => {
   const [jobId, setJobId] = useState('');
   const [jobDescFile, setJobDescFile] = useState(null);
   const [profileFile, setProfileFile] = useState(null);
-  const [outputFilename, setOutputFilename] = useState('generated_resume.docx');
+  const [folderPath, setFolderPath] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [jobName, setJobName] = useState('');
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -15,11 +17,13 @@ const ResumeGeneratorForm = ({ onSubmit, isLoading }) => {
     formData.append('job_source', jobSource);
     if (jobSource === 'file') {
       if (jobDescFile) formData.append('job_desc_file', jobDescFile);
+      formData.append('company_name', companyName);
+      formData.append('job_name', jobName);
     } else {
       formData.append('job_id', jobId);
     }
     if (profileFile) formData.append('profile_file', profileFile);
-    formData.append('output_filename', outputFilename);
+    formData.append('folder_path', folderPath);
     
     onSubmit(formData);
   };
@@ -58,17 +62,43 @@ const ResumeGeneratorForm = ({ onSubmit, isLoading }) => {
       </div>
 
       {jobSource === 'file' ? (
-        <div className="space-y-2">
-          <label className="text-sm font-medium">Job Description File (Required)</label>
-          <div className="border-2 border-dashed border-border rounded-lg p-4 flex flex-col items-center justify-center text-center hover:border-primary/50 transition-colors bg-input/50">
-            <FileText size={24} className="text-muted-foreground mb-2" />
-            <input
-              type="file"
-              accept=".txt,.pdf,.docx"
-              required
-              onChange={(e) => setJobDescFile(e.target.files[0])}
-              className="text-sm text-muted-foreground file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/20 file:text-primary hover:file:bg-primary/30 w-full"
-            />
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Job Description File (Required)</label>
+            <div className="border-2 border-dashed border-border rounded-lg p-4 flex flex-col items-center justify-center text-center hover:border-primary/50 transition-colors bg-input/50">
+              <FileText size={24} className="text-muted-foreground mb-2" />
+              <input
+                type="file"
+                accept=".txt,.pdf,.docx"
+                required
+                onChange={(e) => setJobDescFile(e.target.files[0])}
+                className="text-sm text-muted-foreground file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/20 file:text-primary hover:file:bg-primary/30 w-full"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Company Name (Required)</label>
+              <input
+                type="text"
+                required
+                value={companyName}
+                onChange={(e) => setCompanyName(e.target.value)}
+                placeholder="e.g. Google"
+                className="w-full p-2.5 rounded-lg bg-input border border-border focus:ring-2 focus:ring-primary/50 transition-all"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Job Name (Required)</label>
+              <input
+                type="text"
+                required
+                value={jobName}
+                onChange={(e) => setJobName(e.target.value)}
+                placeholder="e.g. Software Engineer"
+                className="w-full p-2.5 rounded-lg bg-input border border-border focus:ring-2 focus:ring-primary/50 transition-all"
+              />
+            </div>
           </div>
         </div>
       ) : (
@@ -101,14 +131,14 @@ const ResumeGeneratorForm = ({ onSubmit, isLoading }) => {
 
       <div className="space-y-2 pt-2 border-t border-border/50">
         <label className="text-sm font-medium flex items-center gap-1.5">
-          <Download size={14} className="text-muted-foreground" /> Output DOCX Filename
+          <Download size={14} className="text-muted-foreground" /> Output Folder Path (Required)
         </label>
         <input
           type="text"
           required
-          value={outputFilename}
-          onChange={(e) => setOutputFilename(e.target.value)}
-          placeholder="generated_resume.docx"
+          value={folderPath}
+          onChange={(e) => setFolderPath(e.target.value)}
+          placeholder="/path/to/save/directory"
           className="w-full p-2.5 rounded-lg bg-input border border-border focus:ring-2 focus:ring-primary/50 transition-all"
         />
       </div>

@@ -10,15 +10,14 @@ def _convert_markdown_to_docx(doc, markdown_text: str):
         print("No markdown text.")
         return
 
-    print(f"Converting markdown: {markdown_text[:100]}...")  # Print first 100 chars for debug
+    print(f"Converting markdown: {markdown_text[:100]}...")
     
-    # Split text into lines and process each
     lines = markdown_text.split('\n')
     
     for line in lines:
         line = line.rstrip()
         
-        if not line:  # Skip empty lines
+        if not line:
             continue
             
         # Handle bold text (**text**)
@@ -43,12 +42,9 @@ def generate_job_report(job_title: str, company_name: str, skills_text: str, pro
     Generates a .docx report containing job analysis and suggested projects.
     Saves it to an 'output' folder with a timestamped filename.
     """
-    # 1. Ensure the output directory exists
     output_dir = "output"
     os.makedirs(output_dir, exist_ok=True)
 
-    # 2. Prepare the filename
-    # Format: YYYY-MM-DD_[job_title]_title report.docx
     today_str = datetime.now().strftime("%Y-%m-%d")
     # Clean job title to remove characters that might be invalid for filenames
     if job_title != "":
@@ -62,29 +58,22 @@ def generate_job_report(job_title: str, company_name: str, skills_text: str, pro
     
     filepath = os.path.join(output_dir, filename)
 
-    # 3. Create the Word Document
     doc = Document()
     
-    # Add a main title
     doc.add_heading(f'Job Analysis Report for {f"Job Title:  '{job_title}'" if job_title != '' else f"Company Name: '{company_name}'" if company_name != '' else ""}', 0)
 
-    # Section: Skills and Requirements
     doc.add_heading('Skills, Responsibilities, and Requirements', level=1)
     _convert_markdown_to_docx(doc, skills_text)
 
-    # Section: Suggested Projects
     doc.add_heading('Suggested Learning Projects', level=1)
     _convert_markdown_to_docx(doc, projects_text)
 
-    # Section: Personalized Career Matches
     doc.add_heading('Personalized Career Matches', level=1)
     _convert_markdown_to_docx(doc, matches)
 
-    # Section: Resume Adjustments
     doc.add_heading('Resume Adjustments', level=1)
     _convert_markdown_to_docx(doc, adjustments)
 
-    # 4. Save the file
     try:
         doc.save(filepath)
         print(f"Successfully generated report: {filepath}")
